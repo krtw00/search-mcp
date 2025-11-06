@@ -13,6 +13,14 @@ import {
   ConfigurationError,
   ValidationError,
 } from './errors.js';
+import {
+  createSearchToolMetadata,
+  createSearchToolImplementation,
+  createAdvancedSearchToolMetadata,
+  createAdvancedSearchToolImplementation,
+  createListServersToolMetadata,
+  createListServersToolImplementation,
+} from './search/search-tools.js';
 import type {
   JSONRPCRequest,
   JSONRPCResponse,
@@ -21,6 +29,13 @@ import type {
 
 // Initialize MCP Client Manager
 const manager = new MCPClientManager();
+
+// Search tools metadata (registered after initialization)
+const searchTools = [
+  createSearchToolMetadata(),
+  createAdvancedSearchToolMetadata(),
+  createListServersToolMetadata(),
+];
 
 // Track request ID for responses
 let initialized = false;
@@ -94,10 +109,19 @@ async function handleRequest(request: JSONRPCRequest): Promise<void> {
         }
 
         // Return lightweight tool metadata (no inputSchema for context reduction)
-        const tools = manager.listAllTools();
+        const aggregatedTools = manager.listAllTools();
+
+        // Add search tools to the list
+        const allTools = [
+          ...searchTools.map(tool => ({
+            name: tool.name,
+            description: tool.description,
+          })),
+          ...aggregatedTools,
+        ];
 
         sendResponse(id, {
-          tools,
+          tools: allTools,
         });
         break;
       }
@@ -112,6 +136,28 @@ async function handleRequest(request: JSONRPCRequest): Promise<void> {
 
         if (!name) {
           throw new ValidationError('Tool name is required', 'name');
+        }
+
+        // Check if this is a search tool
+        if (name === 'search_tools') {
+          const impl = createSearchToolImplementation(() => manager.listAllToolsFull());
+          const result = await impl(args || {});
+          sendResponse(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+          break;
+        }
+
+        if (name === 'advanced_search') {
+          const impl = createAdvancedSearchToolImplementation(() => manager.listAllToolsFull());
+          const result = await impl(args || {});
+          sendResponse(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+          break;
+        }
+
+        if (name === 'list_servers') {
+          const impl = createListServersToolImplementation(() => manager.getStats());
+          const result = await impl(args || {});
+          sendResponse(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+          break;
         }
 
         // Execute the tool on the appropriate backend MCP server
