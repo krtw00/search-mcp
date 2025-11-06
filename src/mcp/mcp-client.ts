@@ -14,6 +14,13 @@ import type {
   ToolCallResponse,
 } from '../types/mcp.js';
 
+interface ReconnectionConfig {
+  maxRetries: number;
+  initialDelayMs: number;
+  maxDelayMs: number;
+  backoffMultiplier: number;
+}
+
 export class MCPClient {
   private process: ChildProcess | null = null;
   private readline: Interface | null = null;
@@ -22,6 +29,17 @@ export class MCPClient {
     resolve: (value: any) => void;
     reject: (error: Error) => void;
   }>();
+
+  // Reconnection state
+  private reconnectionAttempts = 0;
+  private reconnectionConfig: ReconnectionConfig = {
+    maxRetries: 5,
+    initialDelayMs: 1000,  // 1 second
+    maxDelayMs: 30000,     // 30 seconds
+    backoffMultiplier: 2,
+  };
+  private isReconnecting = false;
+  private shouldReconnect = true;
 
   constructor(
     private serverName: string,
@@ -73,6 +91,11 @@ export class MCPClient {
 
         this.process.on('exit', (code) => {
           console.error(`[${this.serverName}] Process exited with code ${code}`);
+
+          // Attempt reconnection if enabled and not manually stopped
+          if (this.shouldReconnect && !this.isReconnecting) {
+            this.handleDisconnection();
+          }
         });
 
         // Wait a bit for process to start, then initialize
@@ -97,6 +120,10 @@ export class MCPClient {
    * Stop the MCP server process
    */
   async stop(): Promise<void> {
+    // Disable auto-reconnection when manually stopping
+    this.shouldReconnect = false;
+    this.isReconnecting = false;
+
     if (this.readline) {
       this.readline.close();
       this.readline = null;
@@ -224,5 +251,107 @@ export class MCPClient {
    */
   isRunning(): boolean {
     return this.process !== null && !this.process.killed;
+  }
+
+  /**
+   * Handle disconnection and attempt reconnection
+   */
+  private handleDisconnection(): void {
+    if (this.isReconnecting) {
+      return; // Already reconnecting
+    }
+
+    console.error(`[${this.serverName}] Connection lost, attempting reconnection...`);
+    this.isReconnecting = true;
+    this.reconnectionAttempts = 0;
+
+    this.attemptReconnection();
+  }
+
+  /**
+   * Attempt to reconnect with exponential backoff
+   */
+  private async attemptReconnection(): Promise<void> {
+    if (!this.shouldReconnect) {
+      console.error(`[${this.serverName}] Reconnection disabled`);
+      this.isReconnecting = false;
+      return;
+    }
+
+    if (this.reconnectionAttempts >= this.reconnectionConfig.maxRetries) {
+      console.error(
+        `[${this.serverName}] Max reconnection attempts (${this.reconnectionConfig.maxRetries}) reached. Giving up.`
+      );
+      this.isReconnecting = false;
+      return;
+    }
+
+    this.reconnectionAttempts++;
+
+    // Calculate delay with exponential backoff
+    const delay = Math.min(
+      this.reconnectionConfig.initialDelayMs *
+        Math.pow(this.reconnectionConfig.backoffMultiplier, this.reconnectionAttempts - 1),
+      this.reconnectionConfig.maxDelayMs
+    );
+
+    console.error(
+      `[${this.serverName}] Reconnection attempt ${this.reconnectionAttempts}/${this.reconnectionConfig.maxRetries} in ${delay}ms...`
+    );
+
+    // Wait before reconnecting
+    await new Promise(resolve => setTimeout(resolve, delay));
+
+    try {
+      // Clean up existing process
+      if (this.readline) {
+        this.readline.close();
+        this.readline = null;
+      }
+      if (this.process) {
+        this.process.kill();
+        this.process = null;
+      }
+
+      // Attempt to restart
+      await this.start();
+
+      console.error(`[${this.serverName}] Successfully reconnected!`);
+      this.isReconnecting = false;
+      this.reconnectionAttempts = 0;
+    } catch (error) {
+      console.error(
+        `[${this.serverName}] Reconnection attempt ${this.reconnectionAttempts} failed:`,
+        error instanceof Error ? error.message : error
+      );
+
+      // Try again
+      this.attemptReconnection();
+    }
+  }
+
+  /**
+   * Get reconnection status
+   */
+  getReconnectionStatus(): {
+    isReconnecting: boolean;
+    attempts: number;
+    maxRetries: number;
+  } {
+    return {
+      isReconnecting: this.isReconnecting,
+      attempts: this.reconnectionAttempts,
+      maxRetries: this.reconnectionConfig.maxRetries,
+    };
+  }
+
+  /**
+   * Configure reconnection behavior
+   */
+  configureReconnection(config: Partial<ReconnectionConfig>): void {
+    this.reconnectionConfig = {
+      ...this.reconnectionConfig,
+      ...config,
+    };
   }
 }

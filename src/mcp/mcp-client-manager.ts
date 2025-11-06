@@ -200,6 +200,7 @@ export class MCPClientManager {
       servers: Array.from(this.clients.entries()).map(([name, client]) => ({
         name,
         running: client.isRunning(),
+        reconnectionStatus: client.getReconnectionStatus(),
         toolCount: Array.from(this.tools.values()).filter(
           (t) => t.serverName === name
         ).length,
