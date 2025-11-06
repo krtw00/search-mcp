@@ -6,6 +6,13 @@
 
 import { createInterface } from 'readline';
 import { MCPClientManager } from './mcp/mcp-client-manager.js';
+import {
+  MCPError,
+  isMCPError,
+  toMCPError,
+  ConfigurationError,
+  ValidationError,
+} from './errors.js';
 import type {
   JSONRPCRequest,
   JSONRPCResponse,
@@ -55,8 +62,15 @@ async function handleRequest(request: JSONRPCRequest): Promise<void> {
         // Initialize the Search MCP server
         const configPath = process.env.MCP_CONFIG_PATH || './config/mcp-servers.json';
 
-        await manager.loadConfig(configPath);
-        await manager.startAll();
+        try {
+          await manager.loadConfig(configPath);
+          await manager.startAll();
+        } catch (error) {
+          throw new ConfigurationError(
+            `Failed to initialize MCP servers: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            configPath
+          );
+        }
 
         initialized = true;
 
@@ -97,8 +111,7 @@ async function handleRequest(request: JSONRPCRequest): Promise<void> {
         const { name, arguments: args } = params;
 
         if (!name) {
-          sendError(id, -32602, 'Tool name is required');
-          return;
+          throw new ValidationError('Tool name is required', 'name');
         }
 
         // Execute the tool on the appropriate backend MCP server
@@ -119,8 +132,21 @@ async function handleRequest(request: JSONRPCRequest): Promise<void> {
       }
     }
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    sendError(id, -32000, errorMessage);
+    // Convert to MCPError for consistent error handling
+    const mcpError = isMCPError(error) ? error : toMCPError(error);
+
+    // Map MCPError to JSON-RPC error code
+    let jsonRpcCode = -32000; // Server error
+    if (mcpError.statusCode === 400) {
+      jsonRpcCode = -32602; // Invalid params
+    } else if (mcpError.statusCode === 404) {
+      jsonRpcCode = -32601; // Method not found
+    }
+
+    sendError(id, jsonRpcCode, mcpError.message, {
+      code: mcpError.code,
+      details: mcpError.details,
+    });
   }
 }
 

@@ -4,6 +4,7 @@
 
 import { spawn, type ChildProcess } from 'child_process';
 import { createInterface, type Interface } from 'readline';
+import { MCPServerError, TimeoutError } from '../errors.js';
 import type {
   MCPServerConfig,
   JSONRPCRequest,
@@ -32,50 +33,63 @@ export class MCPClient {
    */
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Spawn the MCP server process
-      this.process = spawn(this.config.command, this.config.args, {
-        env: { ...process.env, ...this.config.env },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      try {
+        // Spawn the MCP server process
+        this.process = spawn(this.config.command, this.config.args, {
+          env: { ...process.env, ...this.config.env },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
 
-      if (!this.process.stdin || !this.process.stdout) {
-        reject(new Error(`Failed to spawn MCP server: ${this.serverName}`));
-        return;
-      }
-
-      // Setup readline for line-by-line JSON-RPC message reading
-      this.readline = createInterface({
-        input: this.process.stdout,
-        crlfDelay: Infinity,
-      });
-
-      this.readline.on('line', (line) => {
-        this.handleResponse(line);
-      });
-
-      // Handle process errors
-      this.process.on('error', (error) => {
-        console.error(`[${this.serverName}] Process error:`, error);
-        reject(error);
-      });
-
-      this.process.stderr?.on('data', (data) => {
-        console.error(`[${this.serverName}] stderr:`, data.toString());
-      });
-
-      this.process.on('exit', (code) => {
-        console.log(`[${this.serverName}] Process exited with code ${code}`);
-      });
-
-      // Wait a bit for process to start, then initialize
-      setTimeout(async () => {
-        try {
-          await this.initialize();
-          resolve();
-        } catch (error) {
-          reject(error);
+        if (!this.process.stdin || !this.process.stdout) {
+          reject(new MCPServerError(
+            `Failed to spawn MCP server: ${this.serverName}`,
+            this.serverName
+          ));
+          return;
         }
-      }, 100);
+
+        // Setup readline for line-by-line JSON-RPC message reading
+        this.readline = createInterface({
+          input: this.process.stdout,
+          crlfDelay: Infinity,
+        });
+
+        this.readline.on('line', (line) => {
+          this.handleResponse(line);
+        });
+
+        // Handle process errors
+        this.process.on('error', (error) => {
+          console.error(`[${this.serverName}] Process error:`, error);
+          reject(new MCPServerError(
+            `MCP server process error: ${error.message}`,
+            this.serverName
+          ));
+        });
+
+        this.process.stderr?.on('data', (data) => {
+          console.error(`[${this.serverName}] stderr:`, data.toString());
+        });
+
+        this.process.on('exit', (code) => {
+          console.error(`[${this.serverName}] Process exited with code ${code}`);
+        });
+
+        // Wait a bit for process to start, then initialize
+        setTimeout(async () => {
+          try {
+            await this.initialize();
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        }, 100);
+      } catch (error) {
+        reject(new MCPServerError(
+          `Failed to start MCP server: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          this.serverName
+        ));
+      }
     });
   }
 
@@ -95,7 +109,7 @@ export class MCPClient {
 
     // Reject all pending requests
     for (const [id, { reject }] of this.pendingRequests) {
-      reject(new Error('MCP client stopped'));
+      reject(new MCPServerError('MCP client stopped', this.serverName));
     }
     this.pendingRequests.clear();
   }
@@ -141,7 +155,7 @@ export class MCPClient {
   private async sendRequest(method: string, params: any): Promise<any> {
     return new Promise((resolve, reject) => {
       if (!this.process || !this.process.stdin) {
-        reject(new Error('MCP client not started'));
+        reject(new MCPServerError('MCP client not started', this.serverName));
         return;
       }
 
@@ -164,7 +178,7 @@ export class MCPClient {
       setTimeout(() => {
         if (this.pendingRequests.has(id)) {
           this.pendingRequests.delete(id);
-          reject(new Error(`Request timeout: ${method}`));
+          reject(new TimeoutError(`Request timeout: ${method}`, 30000));
         }
       }, 30000);
     });
@@ -186,7 +200,10 @@ export class MCPClient {
       this.pendingRequests.delete(response.id);
 
       if (response.error) {
-        pending.reject(new Error(response.error.message));
+        pending.reject(new MCPServerError(
+          `MCP server error: ${response.error.message}`,
+          this.serverName
+        ));
       } else {
         pending.resolve(response.result);
       }
