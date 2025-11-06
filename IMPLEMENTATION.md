@@ -1,10 +1,10 @@
-# Search MCP Implementation Guide
+# Search MCP 実装ガイド
 
-## 🚀 New Implementation (Bun-based MCP Aggregator)
+## 🚀 新しい実装（BunベースのMCPアグリゲーター）
 
-This implementation uses **Bun** as the primary runtime for optimal performance and developer experience.
+この実装は、最適なパフォーマンスと開発体験のために **Bun** をプライマリランタイムとして使用しています。
 
-### Architecture
+### アーキテクチャ
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -16,8 +16,8 @@ This implementation uses **Bun** as the primary runtime for optimal performance 
 │       Search MCP Server (アグリゲーター)    │
 │  ┌──────────────────────────────────────┐  │
 │  │  MCP Client Manager                  │  │
-│  │  - Aggregates multiple MCP servers   │  │
-│  │  - Reduces context by 75%            │  │
+│  │  - 複数のMCPサーバーを集約           │  │
+│  │  - コンテキストを75%削減             │  │
 │  └──────────────────────────────────────┘  │
 └──────┬────────┬────────┬────────┬──────────┘
        │ stdio  │ stdio  │ stdio  │ stdio
@@ -28,63 +28,63 @@ This implementation uses **Bun** as the primary runtime for optimal performance 
 └──────────┘ └────────┘ └────────┘ └────────┘
 ```
 
-### Key Components
+### 主要コンポーネント
 
 1. **MCP Client** (`src/mcp/mcp-client.ts`)
-   - Manages communication with a single backend MCP server
-   - Handles stdio communication and JSON-RPC 2.0 protocol
-   - Spawns and manages child processes
+   - 単一のバックエンドMCPサーバーとの通信を管理
+   - stdio通信とJSON-RPC 2.0プロトコルを処理
+   - 子プロセスの起動と管理
 
 2. **MCP Client Manager** (`src/mcp/mcp-client-manager.ts`)
-   - Manages multiple MCP clients
-   - Aggregates tools from all backend servers
-   - Provides lightweight tool metadata (context reduction)
+   - 複数のMCPクライアントを管理
+   - すべてのバックエンドサーバーからツールを集約
+   - 軽量なツールメタデータを提供（コンテキスト削減）
 
 3. **Search MCP Server** (`src/index.ts`)
-   - Main entry point
-   - Communicates with AI clients via stdio
-   - Proxies tool calls to appropriate backend servers
+   - メインエントリーポイント
+   - stdio経由でAIクライアントと通信
+   - 適切なバックエンドサーバーへツール呼び出しをプロキシ
 
-## 📋 Prerequisites
+## 📋 前提条件
 
-### Option 1: Bun (Recommended)
+### オプション1: Bun（推奨）
 
 ```bash
-# Install Bun
+# Bunのインストール
 curl -fsSL https://bun.sh/install | bash
 
-# Verify installation
+# インストール確認
 bun --version
 ```
 
-### Option 2: Node.js (Fallback)
+### オプション2: Node.js（フォールバック）
 
 ```bash
-# Node.js 18+ required
+# Node.js 18以上が必要
 node --version
 ```
 
-## 🔧 Setup
+## 🔧 セットアップ
 
-### 1. Install Dependencies
+### 1. 依存関係のインストール
 
 ```bash
-# With Bun (recommended)
+# Bunを使用（推奨）
 bun install
 
-# With Node.js
+# Node.jsを使用
 npm install
 ```
 
-### 2. Configure MCP Servers
+### 2. MCPサーバーの設定
 
-Copy the example configuration:
+サンプル設定をコピー：
 
 ```bash
 cp config/mcp-servers.example.json config/mcp-servers.json
 ```
 
-Edit `config/mcp-servers.json`:
+`config/mcp-servers.json` を編集：
 
 ```json
 {
@@ -107,50 +107,50 @@ Edit `config/mcp-servers.json`:
 }
 ```
 
-## 🏃 Running
+## 🏃 実行方法
 
-### Development Mode
+### 開発モード
 
 ```bash
-# With Bun (recommended)
+# Bunで実行（推奨）
 bun run dev
 
-# With Node.js
+# Node.jsで実行
 npm run dev:node
 ```
 
-### Production Build
+### 本番ビルド
 
 ```bash
-# Build with Bun
+# Bunでビルド
 bun run build
 
-# Build single binary
+# シングルバイナリをビルド
 bun run build:binary
 
-# Build with Node.js
+# Node.jsでビルド
 npm run build:node
 ```
 
-### Running the Binary
+### バイナリの実行
 
 ```bash
-# After building binary
+# バイナリビルド後
 ./search-mcp
 ```
 
-## 🧪 Testing
+## 🧪 テスト
 
-### Manual Testing with stdio
+### stdioを使った手動テスト
 
-Create a test script `test-stdin.js`:
+テストスクリプト `test-stdin.js` を作成：
 
 ```javascript
 import { spawn } from 'child_process';
 
 const server = spawn('bun', ['run', 'src/index.ts']);
 
-// Send initialize request
+// initialize リクエストを送信
 server.stdin.write(JSON.stringify({
   jsonrpc: '2.0',
   id: 1,
@@ -161,12 +161,12 @@ server.stdin.write(JSON.stringify({
   }
 }) + '\n');
 
-// Listen for responses
+// レスポンスを待機
 server.stdout.on('data', (data) => {
-  console.log('Response:', data.toString());
+  console.log('レスポンス:', data.toString());
 });
 
-// List tools after 2 seconds
+// 2秒後にツール一覧を取得
 setTimeout(() => {
   server.stdin.write(JSON.stringify({
     jsonrpc: '2.0',
@@ -177,17 +177,17 @@ setTimeout(() => {
 }, 2000);
 ```
 
-Run:
+実行：
 
 ```bash
 node test-stdin.js
 ```
 
-## 🔌 Integration with AI Clients
+## 🔌 AIクライアントとの統合
 
 ### Claude Desktop
 
-Edit `~/.config/claude/config.json`:
+`~/.config/claude/config.json` を編集：
 
 ```json
 {
@@ -203,7 +203,7 @@ Edit `~/.config/claude/config.json`:
 }
 ```
 
-Or use the binary:
+またはバイナリを使用：
 
 ```json
 {
@@ -221,77 +221,77 @@ Or use the binary:
 
 ### Cursor / Windsurf
 
-Similar configuration in their respective config files.
+それぞれの設定ファイルで同様の設定を行います。
 
-## 📊 Context Reduction
+## 📊 コンテキスト削減
 
-### Before (Direct MCP connections)
+### 変更前（直接MCP接続）
 
 ```
-filesystem MCP: 50 tools × 200 tokens = 10,000 tokens
-brave MCP:      20 tools × 200 tokens = 4,000 tokens
-database MCP:   30 tools × 200 tokens = 6,000 tokens
-slack MCP:      15 tools × 200 tokens = 3,000 tokens
+filesystem MCP: 50 tools × 200トークン = 10,000トークン
+brave MCP:      20 tools × 200トークン = 4,000トークン
+database MCP:   30 tools × 200トークン = 6,000トークン
+slack MCP:      15 tools × 200トークン = 3,000トークン
 ─────────────────────────────────────────────
-Total: 23,000 tokens
+合計: 23,000トークン
 ```
 
-### After (Search MCP aggregator)
+### 変更後（Search MCPアグリゲーター）
 
 ```
-Lightweight metadata: 115 tools × 50 tokens = 5,750 tokens
-Tool execution (3 tools): 3 × 200 tokens = 600 tokens
+軽量メタデータ: 115 tools × 50トークン = 5,750トークン
+ツール実行（3ツール使用時）: 3 × 200トークン = 600トークン
 ─────────────────────────────────────────────
-Total: 6,350 tokens (72% reduction)
+合計: 6,350トークン（72%削減）
 ```
 
-## 🐛 Troubleshooting
+## 🐛 トラブルシューティング
 
-### MCP Server Fails to Start
+### MCPサーバーの起動に失敗する
 
 ```bash
-# Check if the command is available
+# コマンドが利用可能か確認
 npx -y @modelcontextprotocol/server-filesystem --version
 
-# Check logs
-# stderr will show in console.error
+# ログを確認
+# stderrがconsole.errorに表示されます
 ```
 
-### Bun Not Found
+### Bunが見つからない
 
 ```bash
-# Install Bun
+# Bunをインストール
 curl -fsSL https://bun.sh/install | bash
 
-# Add to PATH
+# PATHに追加
 export PATH="$HOME/.bun/bin:$PATH"
 
-# Or use Node.js fallback
+# またはNode.jsフォールバックを使用
 npm run dev:node
 ```
 
-### Config File Not Found
+### 設定ファイルが見つからない
 
 ```bash
-# Set custom config path
+# カスタム設定パスを指定
 export MCP_CONFIG_PATH=/path/to/config/mcp-servers.json
 bun run dev
 ```
 
-## 📚 Additional Resources
+## 📚 追加リソース
 
-- [MCP Protocol Specification](https://spec.modelcontextprotocol.io/)
-- [Bun Documentation](https://bun.sh/docs)
-- [Design Documents](./docs/design/)
+- [MCPプロトコル仕様](https://spec.modelcontextprotocol.io/)
+- [Bunドキュメント](https://bun.sh/docs)
+- [設計ドキュメント](./docs/design/)
 
-## 🎯 Next Steps
+## 🎯 次のステップ
 
-1. ✅ Basic MCP aggregator implementation
-2. 🚧 Add tool search functionality
-3. 🚧 Implement hot reload for config changes
-4. 🚧 Add monitoring and statistics
-5. 🚧 Build management UI (optional)
+1. ✅ 基本的なMCPアグリゲーター実装
+2. 🚧 ツール検索機能の追加
+3. 🚧 設定変更時のホットリロード実装
+4. 🚧 監視と統計機能の追加
+5. 🚧 管理UI構築（オプション）
 
-## 🤝 Contributing
+## 🤝 貢献
 
-Please see design documents in `docs/design/` for architecture details.
+アーキテクチャの詳細については、`docs/design/` の設計ドキュメントを参照してください。
