@@ -1,198 +1,205 @@
-# API仕様
+# MCP プロトコル仕様
 
-## ベースURL
+## 概要
 
-```
-http://localhost:3000
-```
+Search MCP Serverは、**Model Context Protocol (MCP)** に準拠したサーバーです。MCPは、stdio通信を用いたJSON-RPC 2.0ベースのプロトコルです。
 
-## エンドポイント
+### 通信方式
 
-### 1. ヘルスチェック
+- **通信路**: 標準入出力 (stdin/stdout)
+- **プロトコル**: JSON-RPC 2.0
+- **データ形式**: JSON (1行1メッセージ)
 
-サーバーが正常に動作しているかを確認します。
+### AIクライアントとの接続
 
-**エンドポイント**
-```
-GET /
-```
+AIクライアント（Claude Desktop、Cursor、Windsurf等）は、Search MCP Serverを子プロセスとして起動し、stdio経由で通信します。
 
-**リクエスト**
-```bash
-curl http://localhost:3000/
-```
-
-**レスポンス**
 ```json
+// Claude Desktopの設定例 (~/.config/claude/config.json)
 {
-  "status": "ok",
-  "message": "MCP Server is running"
+  "mcpServers": {
+    "search-mcp": {
+      "command": "node",
+      "args": ["/path/to/search-mcp/dist/index.js"]
+    }
+  }
 }
 ```
-
-**ステータスコード**
-- `200 OK`: サーバーが正常に動作中
 
 ---
 
-### 2. ツール一覧取得
+## MCPメソッド
 
-登録されている全ツールのメタデータを取得します。
+### 1. initialize
 
-**エンドポイント**
-```
-GET /tools
-```
+MCP接続を初期化します。AIクライアントが最初に呼び出すメソッドです。
 
 **リクエスト**
-```bash
-curl http://localhost:3000/tools
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "1.0.0",
+    "clientInfo": {
+      "name": "claude-desktop",
+      "version": "1.0.0"
+    }
+  }
+}
 ```
 
 **レスポンス**
 ```json
 {
-  "tools": [
-    {
-      "name": "echo",
-      "description": "入力されたメッセージをそのまま返します",
-      "parameters": [
-        {
-          "name": "message",
-          "type": "string",
-          "description": "返すメッセージ",
-          "required": true
-        }
-      ]
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "1.0.0",
+    "serverInfo": {
+      "name": "search-mcp",
+      "version": "1.0.0"
     },
-    {
-      "name": "search",
-      "description": "テキストを検索します（プロトタイプ版）",
-      "parameters": [
-        {
-          "name": "query",
-          "type": "string",
-          "description": "検索クエリ",
-          "required": true
-        },
-        {
-          "name": "limit",
-          "type": "number",
-          "description": "返す結果の最大数",
-          "required": false
-        }
-      ]
+    "capabilities": {
+      "tools": {}
     }
-  ]
+  }
 }
 ```
 
-**ステータスコード**
-- `200 OK`: 成功
+**パラメータ**
+
+| フィールド | 型 | 必須 | 説明 |
+|----------|---|------|------|
+| protocolVersion | string | ○ | MCPプロトコルバージョン |
+| clientInfo | object | ○ | クライアント情報 |
+
+---
+
+### 2. tools/list
+
+集約された全ツールの一覧を取得します（軽量版メタデータ）。
+
+**リクエスト**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/list",
+  "params": {}
+}
+```
+
+**レスポンス**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "filesystem.read_file",
+        "description": "ファイルの内容を読み込みます"
+      },
+      {
+        "name": "filesystem.write_file",
+        "description": "ファイルに内容を書き込みます"
+      },
+      {
+        "name": "brave.search",
+        "description": "Web検索を実行します"
+      },
+      {
+        "name": "database.query",
+        "description": "データベースクエリを実行します"
+      }
+    ]
+  }
+}
+```
 
 **レスポンスフィールド**
 
 | フィールド | 型 | 説明 |
 |----------|---|------|
-| tools | ToolMetadata[] | ツールメタデータの配列 |
+| tools | Tool[] | ツールメタデータの配列（軽量版） |
 
-**ToolMetadata**
-
-| フィールド | 型 | 説明 |
-|----------|---|------|
-| name | string | ツール名（一意） |
-| description | string | ツールの説明 |
-| parameters | ToolParameter[] | パラメータ定義の配列 |
-
-**ToolParameter**
+**Tool（軽量版）**
 
 | フィールド | 型 | 説明 |
 |----------|---|------|
-| name | string | パラメータ名 |
-| type | string | パラメータの型（string, number, boolean, objectなど） |
-| description | string | パラメータの説明 |
-| required | boolean | 必須かどうか（省略可） |
+| name | string | ツール名（`serverName.toolName`形式） |
+| description | string | ツールの簡潔な説明 |
+
+**注意**: パラメータの詳細（inputSchema）は含まれません。これにより、コンテキスト消費を大幅に削減します。
 
 ---
 
-### 3. ツール実行
+### 3. tools/call
 
-指定したツールを実行します。
+指定したツールを実行します。Search MCPは、対応するバックエンドMCPサーバーへリクエストをプロキシします。
 
-**エンドポイント**
-```
-POST /tools/call
-```
-
-**リクエストボディ**
-
-| フィールド | 型 | 必須 | 説明 |
-|----------|---|------|------|
-| name | string | ○ | 実行するツール名 |
-| parameters | object | ○ | ツールに渡すパラメータ（空オブジェクト可） |
-
-**例: Echoツールの実行**
-
-```bash
-curl -X POST http://localhost:3000/tools/call \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "echo",
-    "parameters": {
-      "message": "Hello, MCP!"
-    }
-  }'
-```
-
-**成功レスポンス**
+**リクエスト**
 ```json
 {
-  "success": true,
-  "result": {
-    "echo": "Hello, MCP!",
-    "timestamp": "2025-01-15T10:30:00.000Z"
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "filesystem.read_file",
+    "arguments": {
+      "path": "/path/to/config.json"
+    }
   }
 }
 ```
 
-**例: Searchツールの実行**
+**成功レスポンス**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"key\": \"value\"\n}"
+      }
+    ]
+  }
+}
+```
 
-```bash
-curl -X POST http://localhost:3000/tools/call \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "search",
-    "parameters": {
-      "query": "test query",
-      "limit": 5
+**別の例: Web検索**
+
+**リクエスト**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "tools/call",
+  "params": {
+    "name": "brave.search",
+    "arguments": {
+      "query": "TypeScript best practices"
     }
-  }'
+  }
+}
 ```
 
 **成功レスポンス**
 ```json
 {
-  "success": true,
+  "jsonrpc": "2.0",
+  "id": 4,
   "result": {
-    "query": "test query",
-    "results": [
+    "content": [
       {
-        "id": 1,
-        "title": "Result for \"test query\" - 1",
-        "score": 0.95
-      },
-      {
-        "id": 2,
-        "title": "Result for \"test query\" - 2",
-        "score": 0.87
-      },
-      {
-        "id": 3,
-        "title": "Result for \"test query\" - 3",
-        "score": 0.75
+        "type": "text",
+        "text": "検索結果:\n1. TypeScript公式ドキュメント...\n2. ..."
       }
-    ],
-    "count": 3
+    ]
   }
 }
 ```
@@ -202,117 +209,214 @@ curl -X POST http://localhost:3000/tools/call \
 存在しないツールを指定した場合:
 ```json
 {
-  "success": false,
-  "error": "Tool not found: invalid_tool"
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": {
+    "code": -32602,
+    "message": "Tool not found: invalid.tool"
+  }
 }
 ```
 
-必須パラメータが不足している場合:
+バックエンドMCPサーバーがエラーを返した場合:
 ```json
 {
-  "success": false,
-  "error": "message parameter is required"
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": {
+    "code": -32000,
+    "message": "Backend MCP server error: File not found"
+  }
 }
 ```
 
-**ステータスコード**
-- `200 OK`: 成功
-- `400 Bad Request`: リクエストエラー（ツールが存在しない、パラメータ不正など）
+**パラメータ**
+
+| フィールド | 型 | 必須 | 説明 |
+|----------|---|------|------|
+| name | string | ○ | 実行するツール名（`serverName.toolName`形式） |
+| arguments | object | ○ | ツールに渡す引数（空オブジェクト可） |
 
 **レスポンスフィールド**
 
 | フィールド | 型 | 説明 |
 |----------|---|------|
-| success | boolean | 実行が成功したかどうか |
-| result | any | ツールの実行結果（成功時のみ） |
-| error | string | エラーメッセージ（失敗時のみ） |
+| result | object | ツールの実行結果（成功時） |
+| error | object | エラー情報（失敗時） |
 
 ---
 
 ## エラーハンドリング
 
-### エラーレスポンスの形式
+### JSON-RPC 2.0エラーレスポンス
 
-すべてのエラーレスポンスは以下の形式で返されます：
+すべてのエラーレスポンスは、JSON-RPC 2.0の標準形式で返されます：
 
 ```json
 {
-  "success": false,
-  "error": "エラーメッセージ"
+  "jsonrpc": "2.0",
+  "id": <request_id>,
+  "error": {
+    "code": <error_code>,
+    "message": "<error_message>",
+    "data": <optional_error_details>
+  }
 }
 ```
 
-### 一般的なエラー
+### 標準エラーコード
 
-| エラーメッセージ | 原因 | 解決方法 |
-|---------------|------|---------|
-| Tool name is required | リクエストボディに `name` がない | `name` フィールドを追加 |
-| Tool not found: {name} | 指定したツールが存在しない | `/tools` で利用可能なツールを確認 |
-| {parameter} parameter is required | 必須パラメータが不足 | ツールのメタデータを確認し、必須パラメータを追加 |
+| コード | 説明 | 例 |
+|-------|------|-----|
+| -32700 | Parse error | 不正なJSON |
+| -32600 | Invalid Request | JSON-RPC形式エラー |
+| -32601 | Method not found | 存在しないメソッド |
+| -32602 | Invalid params | パラメータエラー（ツール名が存在しない等） |
+| -32603 | Internal error | サーバー内部エラー |
+| -32000 | Server error | バックエンドMCPサーバーエラー |
+
+### 一般的なエラー例
+
+**ツールが存在しない**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": {
+    "code": -32602,
+    "message": "Tool not found: invalid.tool"
+  }
+}
+```
+
+**バックエンドMCPサーバーが起動していない**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": {
+    "code": -32000,
+    "message": "MCP server 'filesystem' is not running"
+  }
+}
+```
+
+**必須パラメータの不足**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": {
+    "code": -32000,
+    "message": "Backend error: Required parameter 'path' is missing"
+  }
+}
+```
 
 ---
 
 ## 使用例
 
-### Node.jsから呼び出す
+### AIクライアントからの呼び出し
+
+Search MCP Serverは、AIクライアント（Claude Desktop、Cursor、Windsurf）から自動的に呼び出されます。
+
+#### Claude Desktopの設定
+
+`~/.config/claude/config.json` (macOS/Linux) または `%APPDATA%\Claude\config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "search-mcp": {
+      "command": "node",
+      "args": ["/path/to/search-mcp/dist/index.js"],
+      "env": {}
+    }
+  }
+}
+```
+
+Claude Desktopを再起動すると、Search MCPが自動的に起動し、stdio経由で通信します。
+
+### stdio通信のテスト（開発者向け）
+
+**Node.jsでの実装例**
 
 ```javascript
-// ツール一覧を取得
-const response = await fetch('http://localhost:3000/tools');
-const { tools } = await response.json();
-console.log(tools);
+import { spawn } from 'child_process';
 
-// Echoツールを実行
-const callResponse = await fetch('http://localhost:3000/tools/call', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    name: 'echo',
-    parameters: {
-      message: 'Hello from Node.js!'
-    }
-  })
+// Search MCP Serverを起動
+const server = spawn('node', ['/path/to/search-mcp/dist/index.js']);
+
+// JSON-RPCリクエストを送信
+function sendRequest(method, params, id = 1) {
+  const request = JSON.stringify({
+    jsonrpc: '2.0',
+    id,
+    method,
+    params
+  });
+  server.stdin.write(request + '\n');
+}
+
+// レスポンスを受信
+server.stdout.on('data', (data) => {
+  const response = JSON.parse(data.toString());
+  console.log('Response:', response);
 });
-const result = await callResponse.json();
-console.log(result);
+
+// 初期化
+sendRequest('initialize', {
+  protocolVersion: '1.0.0',
+  clientInfo: { name: 'test-client', version: '1.0.0' }
+}, 1);
+
+// ツール一覧取得
+sendRequest('tools/list', {}, 2);
+
+// ツール実行
+sendRequest('tools/call', {
+  name: 'filesystem.read_file',
+  arguments: { path: '/path/to/file.txt' }
+}, 3);
 ```
 
-### Pythonから呼び出す
+---
 
-```python
-import requests
+## プロトコルバージョン
 
-# ツール一覧を取得
-response = requests.get('http://localhost:3000/tools')
-tools = response.json()['tools']
-print(tools)
+現在のMCPプロトコルバージョン: `1.0.0`
 
-# Echoツールを実行
-response = requests.post(
-    'http://localhost:3000/tools/call',
-    json={
-        'name': 'echo',
-        'parameters': {
-            'message': 'Hello from Python!'
-        }
+Search MCPは、標準のMCPプロトコル仕様に準拠しています。詳細は [MCP公式仕様](https://spec.modelcontextprotocol.io/) を参照してください。
+
+---
+
+## バックエンドMCPサーバーの管理
+
+Search MCPは、`config/mcp-servers.json` で定義されたバックエンドMCPサーバーを管理します。
+
+### 設定例
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/user/Documents"],
+      "env": {},
+      "enabled": true
+    },
+    "brave": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "your-api-key"
+      },
+      "enabled": true
     }
-)
-result = response.json()
-print(result)
+  }
+}
 ```
 
----
-
-## レート制限
-
-現在、レート制限は実装されていません。将来のバージョンで追加予定です。
-
----
-
-## バージョニング
-
-現在のAPIバージョン: `v1.0.0`
-
-今後、破壊的変更が必要な場合は、URLパスにバージョン番号を含める予定です（例: `/v2/tools`）。
+各MCPサーバーは、Search MCPの起動時に自動的に開始され、stdio経由で通信します。

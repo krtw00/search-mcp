@@ -1,413 +1,338 @@
-# ツール開発ガイド
+# MCPサーバー管理ガイド
 
-このガイドでは、Search MCP Serverに新しいツールを追加する方法を説明します。
+このガイドでは、Search MCP ServerにMCPサーバーを追加・管理する方法を説明します。
 
-## ツールの構造
+## Search MCPの役割
 
-各ツールは2つの主要な要素で構成されます：
+Search MCP Serverは**MCPアグリゲーター**です。直接ツールを実装するのではなく、既存のMCPサーバーを統合管理します。
 
-1. **メタデータ (Metadata)**: ツールの名前、説明、パラメータ定義
-2. **実装 (Implementation)**: 実際の処理ロジック
+### ツールの追加方法
 
-## ツール作成の手順
+1. **既存のMCPサーバーを追加**（推奨）: 設定ファイルでMCPサーバーを登録
+2. **カスタムMCPサーバーを作成**: 独自のMCPサーバーを開発し、Search MCPに追加
 
-### 1. 新しいツールファイルを作成
+## 方法1: 既存のMCPサーバーを追加（推奨）
 
-`src/tools/` ディレクトリに新しいファイルを作成します。
+### 手順
 
-```bash
-touch src/tools/your-tool.ts
-```
+#### 1. 利用可能なMCPサーバーを確認
 
-### 2. メタデータを定義
+公式およびコミュニティのMCPサーバー：
+- `@modelcontextprotocol/server-filesystem` - ファイルシステム操作
+- `@modelcontextprotocol/server-brave-search` - Web検索
+- `@modelcontextprotocol/server-postgres` - PostgreSQLデータベース
+- `@modelcontextprotocol/server-slack` - Slack連携
+- その他、[MCP公式リポジトリ](https://github.com/modelcontextprotocol)を参照
 
-ツールのメタデータを定義します。これにより、AIエージェントがツールを発見し、どのように使用するかを理解できます。
+#### 2. 設定ファイルに追加
 
-```typescript
-import type { ToolMetadata, ToolImplementation } from '../types.js';
+`config/mcp-servers.json` を編集：
 
-export const yourToolMetadata: ToolMetadata = {
-  name: 'your-tool',
-  description: 'ツールの簡潔な説明',
-  parameters: [
-    {
-      name: 'param1',
-      type: 'string',
-      description: 'パラメータの説明',
-      required: true
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/user/Documents"],
+      "env": {},
+      "enabled": true
     },
-    {
-      name: 'param2',
-      type: 'number',
-      description: 'オプションパラメータの説明',
-      required: false
-    }
-  ]
-};
-```
-
-**メタデータのベストプラクティス:**
-
-- **name**: 小文字とハイフンを使用（例: `calculate-sum`, `fetch-data`）
-- **description**: 1-2文で簡潔に。AIが理解しやすいように
-- **parameters**: すべての必須パラメータを明確に定義
-
-### 3. 実装を定義
-
-ツールの実際の処理ロジックを実装します。
-
-```typescript
-export const yourToolImplementation: ToolImplementation = async (parameters) => {
-  // パラメータの取得とデフォルト値の設定
-  const { param1, param2 = 10 } = parameters;
-
-  // 必須パラメータのバリデーション
-  if (!param1) {
-    throw new Error('param1 parameter is required');
-  }
-
-  // ビジネスロジック
-  const result = performSomeOperation(param1, param2);
-
-  // 結果を返す
-  return {
-    success: true,
-    data: result,
-    timestamp: new Date().toISOString()
-  };
-};
-```
-
-**実装のベストプラクティス:**
-
-- **非同期関数**: すべてのツールは `async` 関数として実装
-- **エラーハンドリング**: 適切なエラーメッセージを投げる
-- **型安全**: TypeScriptの型を活用
-- **レスポンス形式**: 一貫したレスポンス構造を返す
-
-### 4. サーバーに登録
-
-`src/index.ts` でツールをインポートし、レジストリに登録します。
-
-```typescript
-import { yourToolMetadata, yourToolImplementation } from './tools/your-tool.js';
-
-// ツールレジストリに登録
-toolRegistry.register(yourToolMetadata, yourToolImplementation);
-```
-
-### 5. ビルドとテスト
-
-```bash
-# ビルド
-npm run build
-
-# 開発モードで起動
-npm run dev
-```
-
-ツールが正しく登録されているか確認：
-
-```bash
-curl http://localhost:3000/tools
-```
-
-ツールを実行：
-
-```bash
-curl -X POST http://localhost:3000/tools/call \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "your-tool",
-    "parameters": {
-      "param1": "test value"
-    }
-  }'
-```
-
-## 実装例
-
-### 例1: 簡単な計算ツール
-
-```typescript
-// src/tools/calculate.ts
-import type { ToolMetadata, ToolImplementation } from '../types.js';
-
-export const calculateMetadata: ToolMetadata = {
-  name: 'calculate',
-  description: '2つの数値の加算、減算、乗算、除算を実行します',
-  parameters: [
-    {
-      name: 'operation',
-      type: 'string',
-      description: '実行する演算（add, subtract, multiply, divide）',
-      required: true
+    "brave": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "your-api-key-here"
+      },
+      "enabled": true
     },
-    {
-      name: 'a',
-      type: 'number',
-      description: '最初の数値',
-      required: true
-    },
-    {
-      name: 'b',
-      type: 'number',
-      description: '2番目の数値',
-      required: true
+    "database": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres"],
+      "env": {
+        "POSTGRES_CONNECTION_STRING": "postgresql://user:pass@localhost:5432/db"
+      },
+      "enabled": true
     }
-  ]
-};
-
-export const calculateImplementation: ToolImplementation = async (parameters) => {
-  const { operation, a, b } = parameters;
-
-  // バリデーション
-  if (!operation || a === undefined || b === undefined) {
-    throw new Error('operation, a, and b parameters are required');
   }
-
-  if (typeof a !== 'number' || typeof b !== 'number') {
-    throw new Error('a and b must be numbers');
-  }
-
-  // 演算実行
-  let result: number;
-  switch (operation) {
-    case 'add':
-      result = a + b;
-      break;
-    case 'subtract':
-      result = a - b;
-      break;
-    case 'multiply':
-      result = a * b;
-      break;
-    case 'divide':
-      if (b === 0) {
-        throw new Error('Division by zero is not allowed');
-      }
-      result = a / b;
-      break;
-    default:
-      throw new Error(`Unknown operation: ${operation}`);
-  }
-
-  return {
-    operation,
-    a,
-    b,
-    result,
-    timestamp: new Date().toISOString()
-  };
-};
-```
-
-### 例2: 外部APIを呼び出すツール
-
-```typescript
-// src/tools/fetch-weather.ts
-import type { ToolMetadata, ToolImplementation } from '../types.js';
-
-export const fetchWeatherMetadata: ToolMetadata = {
-  name: 'fetch-weather',
-  description: '指定した都市の天気情報を取得します',
-  parameters: [
-    {
-      name: 'city',
-      type: 'string',
-      description: '都市名',
-      required: true
-    },
-    {
-      name: 'units',
-      type: 'string',
-      description: '温度の単位（metric または imperial）',
-      required: false
-    }
-  ]
-};
-
-export const fetchWeatherImplementation: ToolImplementation = async (parameters) => {
-  const { city, units = 'metric' } = parameters;
-
-  if (!city) {
-    throw new Error('city parameter is required');
-  }
-
-  try {
-    // 外部APIを呼び出し（例）
-    const apiKey = process.env.WEATHER_API_KEY;
-    const response = await fetch(
-      `https://api.openweathermap.org/data/2.5/weather?q=${city}&units=${units}&appid=${apiKey}`
-    );
-
-    if (!response.ok) {
-      throw new Error(`Weather API error: ${response.statusText}`);
-    }
-
-    const data = await response.json();
-
-    return {
-      city: data.name,
-      temperature: data.main.temp,
-      description: data.weather[0].description,
-      units,
-      timestamp: new Date().toISOString()
-    };
-  } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(`Failed to fetch weather: ${error.message}`);
-    }
-    throw error;
-  }
-};
-```
-
-### 例3: データベース操作ツール
-
-```typescript
-// src/tools/db-query.ts
-import type { ToolMetadata, ToolImplementation } from '../types.js';
-// import { db } from '../database.js'; // 仮想のDB接続
-
-export const dbQueryMetadata: ToolMetadata = {
-  name: 'db-query',
-  description: 'データベースにクエリを実行します',
-  parameters: [
-    {
-      name: 'table',
-      type: 'string',
-      description: 'クエリ対象のテーブル名',
-      required: true
-    },
-    {
-      name: 'filter',
-      type: 'object',
-      description: 'フィルタ条件',
-      required: false
-    },
-    {
-      name: 'limit',
-      type: 'number',
-      description: '取得する最大件数',
-      required: false
-    }
-  ]
-};
-
-export const dbQueryImplementation: ToolImplementation = async (parameters) => {
-  const { table, filter = {}, limit = 100 } = parameters;
-
-  if (!table) {
-    throw new Error('table parameter is required');
-  }
-
-  try {
-    // データベースクエリの実行（疑似コード）
-    // const results = await db.select(table).where(filter).limit(limit);
-
-    // プロトタイプとしてダミーデータを返す
-    const results = [
-      { id: 1, data: 'sample data 1' },
-      { id: 2, data: 'sample data 2' }
-    ];
-
-    return {
-      table,
-      count: results.length,
-      results,
-      timestamp: new Date().toISOString()
-    };
-  } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(`Database query failed: ${error.message}`);
-    }
-    throw error;
-  }
-};
-```
-
-## テスト
-
-### ユニットテストの作成
-
-ツールのテストは `src/test.ts` または専用のテストファイルで行います。
-
-```typescript
-// src/tools/__tests__/calculate.test.ts
-import { calculateImplementation } from '../calculate.js';
-
-async function testCalculate() {
-  // 加算のテスト
-  const addResult = await calculateImplementation({
-    operation: 'add',
-    a: 5,
-    b: 3
-  });
-  console.assert(addResult.result === 8, 'Addition test failed');
-
-  // 除算のテスト
-  const divideResult = await calculateImplementation({
-    operation: 'divide',
-    a: 10,
-    b: 2
-  });
-  console.assert(divideResult.result === 5, 'Division test failed');
-
-  // エラーケースのテスト
-  try {
-    await calculateImplementation({
-      operation: 'divide',
-      a: 10,
-      b: 0
-    });
-    console.assert(false, 'Should have thrown error for division by zero');
-  } catch (error) {
-    console.assert(error instanceof Error, 'Error handling test failed');
-  }
-
-  console.log('All calculate tests passed!');
 }
-
-testCalculate();
 ```
 
-## ツール開発のチェックリスト
+#### 3. Search MCPを再起動
 
-- [ ] メタデータが明確で分かりやすい
-- [ ] すべての必須パラメータが定義されている
-- [ ] パラメータのバリデーションが実装されている
-- [ ] エラーハンドリングが適切に行われている
-- [ ] 非同期処理が正しく実装されている
-- [ ] レスポンス形式が一貫している
-- [ ] テストが作成されている
-- [ ] `src/index.ts` に登録されている
-- [ ] ドキュメントが更新されている（必要に応じて）
+```bash
+npm run build
+npm start
+```
+
+#### 4. ツールが追加されたことを確認
+
+AIクライアント（Claude Desktop等）から、新しいツール（例: `brave.search`、`database.query`）が利用可能になります。
+
+### 設定項目の説明
+
+| フィールド | 必須 | 説明 | 例 |
+|----------|------|------|-----|
+| command | ○ | 実行コマンド | `"npx"`, `"node"`, `"/path/to/binary"` |
+| args | ○ | コマンド引数の配列 | `["-y", "@modelcontextprotocol/server-filesystem"]` |
+| env | - | 環境変数（オブジェクト） | `{"API_KEY": "xxx"}` |
+| enabled | - | 有効/無効の切り替え | `true`（デフォルト） |
+
+### Claude Desktopから設定をコピー
+
+既存のClaude Desktop設定（`~/.config/claude/config.json`）から、`mcpServers` セクションをそのままコピー可能です：
+
+```json
+// Claude Desktopの設定
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
+    }
+  }
+}
+```
+
+↓ そのままSearch MCPの `config/mcp-servers.json` にコピー ↓
+
+```json
+// Search MCPの設定
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
+    }
+  }
+}
+```
+
+## 方法2: カスタムMCPサーバーを作成（高度）
+
+独自のツールが必要な場合は、カスタムMCPサーバーを作成してSearch MCPに追加できます。
+
+### 概要
+
+1. 標準MCPプロトコルに準拠したサーバーを実装
+2. stdio通信でJSON-RPC 2.0メッセージを処理
+3. `initialize`、`tools/list`、`tools/call`メソッドを実装
+4. Search MCPの設定ファイルに追加
+
+### 最小限のMCPサーバー実装例（Node.js/TypeScript）
+
+```typescript
+// custom-mcp-server.ts
+import { createInterface } from 'readline';
+
+// ツール定義
+const tools = [
+  {
+    name: 'greet',
+    description: '挨拶メッセージを返します',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: '名前'
+        }
+      },
+      required: ['name']
+    }
+  }
+];
+
+// stdio経由でJSON-RPCリクエストを受信
+const rl = createInterface({
+  input: process.stdin,
+  output: process.stdout,
+  terminal: false
+});
+
+rl.on('line', async (line) => {
+  try {
+    const request = JSON.parse(line);
+    const response = await handleRequest(request);
+    console.log(JSON.stringify(response));
+  } catch (error) {
+    console.error(JSON.stringify({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: -32700,
+        message: 'Parse error'
+      }
+    }));
+  }
+});
+
+// リクエストハンドラ
+async function handleRequest(request: any) {
+  const { id, method, params } = request;
+
+  switch (method) {
+    case 'initialize':
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          protocolVersion: '1.0.0',
+          serverInfo: {
+            name: 'custom-mcp-server',
+            version: '1.0.0'
+          },
+          capabilities: {
+            tools: {}
+          }
+        }
+      };
+
+    case 'tools/list':
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          tools
+        }
+      };
+
+    case 'tools/call':
+      const { name, arguments: args } = params;
+      if (name === 'greet') {
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            content: [
+              {
+                type: 'text',
+                text: `Hello, ${args.name}!`
+              }
+            ]
+          }
+        };
+      }
+      return {
+        jsonrpc: '2.0',
+        id,
+        error: {
+          code: -32602,
+          message: `Tool not found: ${name}`
+        }
+      };
+
+    default:
+      return {
+        jsonrpc: '2.0',
+        id,
+        error: {
+          code: -32601,
+          message: `Method not found: ${method}`
+        }
+      };
+  }
+}
+```
+
+### Search MCPへの追加
+
+#### 1. ビルド
+
+```bash
+tsc custom-mcp-server.ts
+```
+
+#### 2. 設定ファイルに追加
+
+`config/mcp-servers.json`:
+
+```json
+{
+  "mcpServers": {
+    "custom": {
+      "command": "node",
+      "args": ["/path/to/custom-mcp-server.js"],
+      "env": {},
+      "enabled": true
+    }
+  }
+}
+```
+
+#### 3. Search MCPを再起動
+
+```bash
+npm run build
+npm start
+```
+
+これで、`custom.greet` ツールがAIクライアントから利用可能になります。
+
+## MCPサーバー追加のチェックリスト
+
+### 既存MCPサーバーを追加する場合
+
+- [ ] MCPサーバーのコマンドとパスを確認
+- [ ] 必要な環境変数を特定
+- [ ] `config/mcp-servers.json` に設定を追加
+- [ ] Search MCPを再起動
+- [ ] AIクライアントからツールが見えることを確認
+- [ ] 実際にツールを実行してテスト
+
+### カスタムMCPサーバーを作成する場合
+
+- [ ] MCPプロトコル（JSON-RPC 2.0 over stdio）に準拠
+- [ ] `initialize`、`tools/list`、`tools/call`メソッドを実装
+- [ ] エラーハンドリングが適切に実装されている
+- [ ] ツールのメタデータが明確
+- [ ] パラメータのバリデーション実装
+- [ ] `config/mcp-servers.json` に追加
+- [ ] Search MCPから正常に呼び出せることを確認
 
 ## よくある質問
 
-### Q: ツール名の命名規則は？
+### Q: Claude Desktopで使っているMCPサーバーをそのまま使える？
 
-A: ケバブケース（小文字とハイフン）を使用してください。例: `fetch-data`, `calculate-sum`
+A: はい。Claude Desktopの設定（`mcpServers`セクション）をそのまま`config/mcp-servers.json`にコピーできます。
 
-### Q: パラメータの型には何が使える？
+### Q: MCPサーバーの追加後、再起動は必要？
 
-A: TypeScriptの基本型（`string`, `number`, `boolean`, `object`, `array`）が使用できます。
+A: はい。現在は設定変更後にSearch MCPの再起動が必要です。将来的にはホットリロード機能を追加予定です。
 
-### Q: 複雑なバリデーションはどうすればいい？
+### Q: 複数のMCPサーバーで同じツール名がある場合は？
 
-A: 実装関数内でカスタムバリデーションロジックを追加してください。必要に応じて、外部のバリデーションライブラリ（Zod, Yupなど）も使用できます。
+A: Search MCPは`serverName.toolName`形式で名前空間を分けるため、衝突しません。例: `filesystem.search`と`brave.search`は別物として扱われます。
 
-### Q: 非同期処理が必要ない場合も `async` は必須？
+### Q: MCPサーバーの追加に失敗した場合は？
 
-A: はい。すべてのツールは `async` 関数として実装してください。これにより、APIの一貫性が保たれます。
+A: Search MCPのログを確認してください。MCPサーバーの起動コマンド、パス、環境変数が正しいか確認してください。
 
-### Q: ツールの削除方法は？
+### Q: MCPサーバーを一時的に無効化したい
 
-A: ツールファイルを削除し、`src/index.ts` から登録を削除してください。
+A: `config/mcp-servers.json`で`"enabled": false`を設定してください。
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["..."],
+      "enabled": false  // 一時的に無効化
+    }
+  }
+}
+```
+
+### Q: カスタムMCPサーバーの開発に役立つリソースは？
+
+A: 以下を参照してください：
+- [MCP公式仕様](https://spec.modelcontextprotocol.io/)
+- [MCP公式リポジトリ](https://github.com/modelcontextprotocol)
+- [JSON-RPC 2.0仕様](https://www.jsonrpc.org/specification)
 
 ## 参考リソース
 
+- [MCP公式仕様](https://spec.modelcontextprotocol.io/)
+- [MCP公式リポジトリ](https://github.com/modelcontextprotocol)
 - [TypeScript公式ドキュメント](https://www.typescriptlang.org/docs/)
-- [Fastify公式ドキュメント](https://www.fastify.io/)
-- [Model Context Protocol](https://www.anthropic.com/news/model-context-protocol)
+- [JSON-RPC 2.0仕様](https://www.jsonrpc.org/specification)
