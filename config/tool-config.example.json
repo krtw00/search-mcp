@@ -1,0 +1,32 @@
+{
+  "global": {
+    "defaultTimeout": 30000,
+    "defaultMaxRetries": 0,
+    "defaultCacheTTL": 300,
+    "logLevel": "info"
+  },
+  "tools": {
+    "filesystem.read_file": {
+      "enabled": true,
+      "timeout": 10000,
+      "cache": {
+        "enabled": true,
+        "ttl": 600
+      }
+    },
+    "brave-search.search": {
+      "enabled": true,
+      "timeout": 15000,
+      "maxRetries": 2,
+      "cache": {
+        "enabled": true,
+        "ttl": 1800
+      }
+    },
+    "database.query": {
+      "enabled": true,
+      "timeout": 30000,
+      "maxRetries": 1
+    }
+  }
+}

@@ -4,6 +4,12 @@
 
 import { readFile } from 'fs/promises';
 import { MCPClient } from './mcp-client.js';
+import {
+  ConfigurationError,
+  ToolNotFoundError,
+  MCPServerError,
+} from '../errors.js';
+import { getToolCache } from '../performance/tool-cache.js';
 import type {
   MCPServersConfig,
   ToolMetadata,
@@ -26,18 +32,31 @@ export class MCPClientManager {
    * Load MCP servers configuration from file
    */
   async loadConfig(configPath: string): Promise<void> {
-    const configContent = await readFile(configPath, 'utf-8');
-    const config: MCPServersConfig = JSON.parse(configContent);
+    try {
+      const configContent = await readFile(configPath, 'utf-8');
+      const config: MCPServersConfig = JSON.parse(configContent);
 
-    // Create MCP clients for each enabled server
-    for (const [serverName, serverConfig] of Object.entries(config.mcpServers)) {
-      if (serverConfig.enabled !== false) {
-        const client = new MCPClient(serverName, serverConfig);
-        this.clients.set(serverName, client);
+      // Create MCP clients for each enabled server
+      for (const [serverName, serverConfig] of Object.entries(config.mcpServers)) {
+        if (serverConfig.enabled !== false) {
+          const client = new MCPClient(serverName, serverConfig);
+          this.clients.set(serverName, client);
+        }
       }
-    }
 
-    console.log(`Loaded ${this.clients.size} MCP server configurations`);
+      console.error(`Loaded ${this.clients.size} MCP server configurations`);
+    } catch (error) {
+      if ((error as any).code === 'ENOENT') {
+        throw new ConfigurationError(
+          `Configuration file not found: ${configPath}`,
+          configPath
+        );
+      }
+      throw new ConfigurationError(
+        `Failed to load configuration: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        configPath
+      );
+    }
   }
 
   /**
@@ -139,7 +158,10 @@ export class MCPClientManager {
     // Parse the tool name (format: "serverName.toolName")
     const parts = toolName.split('.');
     if (parts.length !== 2) {
-      throw new Error(`Invalid tool name format: ${toolName}. Expected "serverName.toolName"`);
+      throw new ToolNotFoundError(
+        `Invalid tool name format: ${toolName}. Expected "serverName.toolName"`,
+        toolName
+      );
     }
 
     const [serverName, originalToolName] = parts;
@@ -147,22 +169,41 @@ export class MCPClientManager {
     // Find the client
     const client = this.clients.get(serverName);
     if (!client) {
-      throw new Error(`MCP server not found: ${serverName}`);
+      throw new MCPServerError(`MCP server not found: ${serverName}`, serverName);
     }
 
     if (!client.isRunning()) {
-      throw new Error(`MCP server not running: ${serverName}`);
+      throw new MCPServerError(`MCP server not running: ${serverName}`, serverName);
     }
 
-    // Execute the tool
-    try {
-      const response = await client.callTool(originalToolName, args);
-      return response;
-    } catch (error) {
-      throw new Error(
-        `Failed to execute tool ${toolName}: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
+    // Try to get from cache first
+    const toolCache = getToolCache();
+    const { result, cached } = await toolCache.executeWithCache(
+      toolName,
+      args,
+      async () => {
+        // Execute the tool if not cached
+        try {
+          const response = await client.callTool(originalToolName, args);
+          return response;
+        } catch (error) {
+          throw new MCPServerError(
+            `Failed to execute tool ${toolName}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            serverName
+          );
+        }
+      }
+    );
+
+    // Add cache indicator to response if it was cached
+    if (cached && typeof result === 'object' && result !== null) {
+      return {
+        ...result,
+        _cached: true,
+      };
     }
+
+    return result;
   }
 
   /**
@@ -178,6 +219,7 @@ export class MCPClientManager {
       servers: Array.from(this.clients.entries()).map(([name, client]) => ({
         name,
         running: client.isRunning(),
+        reconnectionStatus: client.getReconnectionStatus(),
         toolCount: Array.from(this.tools.values()).filter(
           (t) => t.serverName === name
         ).length,

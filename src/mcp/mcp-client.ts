@@ -4,6 +4,7 @@
 
 import { spawn, type ChildProcess } from 'child_process';
 import { createInterface, type Interface } from 'readline';
+import { MCPServerError, TimeoutError } from '../errors.js';
 import type {
   MCPServerConfig,
   JSONRPCRequest,
@@ -13,6 +14,13 @@ import type {
   ToolCallResponse,
 } from '../types/mcp.js';
 
+interface ReconnectionConfig {
+  maxRetries: number;
+  initialDelayMs: number;
+  maxDelayMs: number;
+  backoffMultiplier: number;
+}
+
 export class MCPClient {
   private process: ChildProcess | null = null;
   private readline: Interface | null = null;
@@ -21,6 +29,17 @@ export class MCPClient {
     resolve: (value: any) => void;
     reject: (error: Error) => void;
   }>();
+
+  // Reconnection state
+  private reconnectionAttempts = 0;
+  private reconnectionConfig: ReconnectionConfig = {
+    maxRetries: 5,
+    initialDelayMs: 1000,  // 1 second
+    maxDelayMs: 30000,     // 30 seconds
+    backoffMultiplier: 2,
+  };
+  private isReconnecting = false;
+  private shouldReconnect = true;
 
   constructor(
     private serverName: string,
@@ -32,50 +51,68 @@ export class MCPClient {
    */
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Spawn the MCP server process
-      this.process = spawn(this.config.command, this.config.args, {
-        env: { ...process.env, ...this.config.env },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      try {
+        // Spawn the MCP server process
+        this.process = spawn(this.config.command, this.config.args, {
+          env: { ...process.env, ...this.config.env },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
 
-      if (!this.process.stdin || !this.process.stdout) {
-        reject(new Error(`Failed to spawn MCP server: ${this.serverName}`));
-        return;
-      }
-
-      // Setup readline for line-by-line JSON-RPC message reading
-      this.readline = createInterface({
-        input: this.process.stdout,
-        crlfDelay: Infinity,
-      });
-
-      this.readline.on('line', (line) => {
-        this.handleResponse(line);
-      });
-
-      // Handle process errors
-      this.process.on('error', (error) => {
-        console.error(`[${this.serverName}] Process error:`, error);
-        reject(error);
-      });
-
-      this.process.stderr?.on('data', (data) => {
-        console.error(`[${this.serverName}] stderr:`, data.toString());
-      });
-
-      this.process.on('exit', (code) => {
-        console.log(`[${this.serverName}] Process exited with code ${code}`);
-      });
-
-      // Wait a bit for process to start, then initialize
-      setTimeout(async () => {
-        try {
-          await this.initialize();
-          resolve();
-        } catch (error) {
-          reject(error);
+        if (!this.process.stdin || !this.process.stdout) {
+          reject(new MCPServerError(
+            `Failed to spawn MCP server: ${this.serverName}`,
+            this.serverName
+          ));
+          return;
         }
-      }, 100);
+
+        // Setup readline for line-by-line JSON-RPC message reading
+        this.readline = createInterface({
+          input: this.process.stdout,
+          crlfDelay: Infinity,
+        });
+
+        this.readline.on('line', (line) => {
+          this.handleResponse(line);
+        });
+
+        // Handle process errors
+        this.process.on('error', (error) => {
+          console.error(`[${this.serverName}] Process error:`, error);
+          reject(new MCPServerError(
+            `MCP server process error: ${error.message}`,
+            this.serverName
+          ));
+        });
+
+        this.process.stderr?.on('data', (data) => {
+          console.error(`[${this.serverName}] stderr:`, data.toString());
+        });
+
+        this.process.on('exit', (code) => {
+          console.error(`[${this.serverName}] Process exited with code ${code}`);
+
+          // Attempt reconnection if enabled and not manually stopped
+          if (this.shouldReconnect && !this.isReconnecting) {
+            this.handleDisconnection();
+          }
+        });
+
+        // Wait a bit for process to start, then initialize
+        setTimeout(async () => {
+          try {
+            await this.initialize();
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        }, 100);
+      } catch (error) {
+        reject(new MCPServerError(
+          `Failed to start MCP server: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          this.serverName
+        ));
+      }
     });
   }
 
@@ -83,6 +120,10 @@ export class MCPClient {
    * Stop the MCP server process
    */
   async stop(): Promise<void> {
+    // Disable auto-reconnection when manually stopping
+    this.shouldReconnect = false;
+    this.isReconnecting = false;
+
     if (this.readline) {
       this.readline.close();
       this.readline = null;
@@ -95,7 +136,7 @@ export class MCPClient {
 
     // Reject all pending requests
     for (const [id, { reject }] of this.pendingRequests) {
-      reject(new Error('MCP client stopped'));
+      reject(new MCPServerError('MCP client stopped', this.serverName));
     }
     this.pendingRequests.clear();
   }
@@ -141,7 +182,7 @@ export class MCPClient {
   private async sendRequest(method: string, params: any): Promise<any> {
     return new Promise((resolve, reject) => {
       if (!this.process || !this.process.stdin) {
-        reject(new Error('MCP client not started'));
+        reject(new MCPServerError('MCP client not started', this.serverName));
         return;
       }
 
@@ -164,7 +205,7 @@ export class MCPClient {
       setTimeout(() => {
         if (this.pendingRequests.has(id)) {
           this.pendingRequests.delete(id);
-          reject(new Error(`Request timeout: ${method}`));
+          reject(new TimeoutError(`Request timeout: ${method}`, 30000));
         }
       }, 30000);
     });
@@ -186,7 +227,10 @@ export class MCPClient {
       this.pendingRequests.delete(response.id);
 
       if (response.error) {
-        pending.reject(new Error(response.error.message));
+        pending.reject(new MCPServerError(
+          `MCP server error: ${response.error.message}`,
+          this.serverName
+        ));
       } else {
         pending.resolve(response.result);
       }
@@ -207,5 +251,107 @@ export class MCPClient {
    */
   isRunning(): boolean {
     return this.process !== null && !this.process.killed;
+  }
+
+  /**
+   * Handle disconnection and attempt reconnection
+   */
+  private handleDisconnection(): void {
+    if (this.isReconnecting) {
+      return; // Already reconnecting
+    }
+
+    console.error(`[${this.serverName}] Connection lost, attempting reconnection...`);
+    this.isReconnecting = true;
+    this.reconnectionAttempts = 0;
+
+    this.attemptReconnection();
+  }
+
+  /**
+   * Attempt to reconnect with exponential backoff
+   */
+  private async attemptReconnection(): Promise<void> {
+    if (!this.shouldReconnect) {
+      console.error(`[${this.serverName}] Reconnection disabled`);
+      this.isReconnecting = false;
+      return;
+    }
+
+    if (this.reconnectionAttempts >= this.reconnectionConfig.maxRetries) {
+      console.error(
+        `[${this.serverName}] Max reconnection attempts (${this.reconnectionConfig.maxRetries}) reached. Giving up.`
+      );
+      this.isReconnecting = false;
+      return;
+    }
+
+    this.reconnectionAttempts++;
+
+    // Calculate delay with exponential backoff
+    const delay = Math.min(
+      this.reconnectionConfig.initialDelayMs *
+        Math.pow(this.reconnectionConfig.backoffMultiplier, this.reconnectionAttempts - 1),
+      this.reconnectionConfig.maxDelayMs
+    );
+
+    console.error(
+      `[${this.serverName}] Reconnection attempt ${this.reconnectionAttempts}/${this.reconnectionConfig.maxRetries} in ${delay}ms...`
+    );
+
+    // Wait before reconnecting
+    await new Promise(resolve => setTimeout(resolve, delay));
+
+    try {
+      // Clean up existing process
+      if (this.readline) {
+        this.readline.close();
+        this.readline = null;
+      }
+      if (this.process) {
+        this.process.kill();
+        this.process = null;
+      }
+
+      // Attempt to restart
+      await this.start();
+
+      console.error(`[${this.serverName}] Successfully reconnected!`);
+      this.isReconnecting = false;
+      this.reconnectionAttempts = 0;
+    } catch (error) {
+      console.error(
+        `[${this.serverName}] Reconnection attempt ${this.reconnectionAttempts} failed:`,
+        error instanceof Error ? error.message : error
+      );
+
+      // Try again
+      this.attemptReconnection();
+    }
+  }
+
+  /**
+   * Get reconnection status
+   */
+  getReconnectionStatus(): {
+    isReconnecting: boolean;
+    attempts: number;
+    maxRetries: number;
+  } {
+    return {
+      isReconnecting: this.isReconnecting,
+      attempts: this.reconnectionAttempts,
+      maxRetries: this.reconnectionConfig.maxRetries,
+    };
+  }
+
+  /**
+   * Configure reconnection behavior
+   */
+  configureReconnection(config: Partial<ReconnectionConfig>): void {
+    this.reconnectionConfig = {
+      ...this.reconnectionConfig,
+      ...config,
+    };
   }
 }
