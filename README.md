@@ -358,7 +358,7 @@ echo "BRAVE_API_KEY=your-api-key" > .env
 
 ## ライセンス
 
-ISC
+MIT
 
 ## 貢献
 
