@@ -4,23 +4,33 @@
 
 Model Context Protocol (MCP) は、Anthropicが提唱する、AIエージェントがツールや外部リソースと効率的に連携するためのプロトコルです。
 
-このドキュメントでは、MCPの基本概念と、Search MCP Serverでの実装方針について説明します。
+**Search MCP Server**は、複数のMCPサーバーを統合管理する**MCPアグリゲーター**として設計されており、AIクライアント（Claude Desktop、Cursor、Windsurf等）のコンテキスト消費を70-80%削減します。
+
+このドキュメントでは、MCPの基本概念と、Search MCP ServerにおけるMCPアグリゲーションパターンの実装について説明します。
 
 ## 背景と課題
 
-### AIエージェントが直面する課題
+### AIクライアントが直面する課題
 
 1. **コンテキストウィンドウの制限**
    - AIモデルには処理できるトークン数に上限がある
-   - すべてのツール情報を一度に渡すとコンテキストを圧迫
+   - 複数のMCPサーバー（filesystem、brave-search、database等）を個別に接続すると、各サーバーのツール情報でコンテキストが圧迫される
+   - 例: 4つのMCPサーバー（計115ツール）で約23,000トークンを消費
 
 2. **ツールの発見性**
-   - 多数のツールから適切なものを素早く見つける必要がある
-   - ツールのメタデータが不明瞭だと選択が困難
+   - 多数のMCPサーバーから提供されるツールから、適切なものを素早く見つける必要がある
+   - 各MCPサーバーが個別のツール情報を提供するため、統合的な検索が困難
 
-3. **実行環境の安全性**
-   - AIが生成したコードを安全に実行する環境が必要
-   - サンドボックス化や外部実行環境の活用が重要
+3. **設定管理の複雑さ**
+   - 各MCPサーバーを個別に設定・管理する必要がある
+   - AIクライアント（Claude Desktop、Cursor、Windsurf）ごとに同じ設定を繰り返す手間
+
+### Search MCPによる解決
+
+**MCPアグリゲーターパターン**により、これらの課題を解決：
+- 複数のMCPサーバーを1つのエンドポイントに集約
+- プログレッシブな開示により、コンテキスト消費を75%削減（23,000 → 6,000トークン）
+- 1つの設定ファイルで複数のMCPサーバーを一元管理
 
 ## MCPの基本原則
 
@@ -81,222 +91,337 @@ Step 2: 選択したツールの実行（詳細な処理）
 - サーバーレス関数（AWS Lambda, Cloud Functions）
 - 専用のコード実行環境
 
-## Anthropicの Code Execution with MCP
+## MCPアグリゲーターアーキテクチャ
 
-### 基本アーキテクチャ
+### Search MCPの基本構成
 
 ```
-┌─────────────────────┐
-│   Claude (AI)       │
-│                     │
-│  1. ツール発見      │
-│  2. 適切なツール選択│
-│  3. コード生成      │
-└──────────┬──────────┘
-           │
-           │ MCP
-           ▼
-┌─────────────────────┐
-│  MCP Server         │
-│                     │
-│  - ツールレジストリ │
-│  - メタデータ管理   │
-│  - ルーティング     │
-└──────────┬──────────┘
-           │
-           │
-    ┌──────┴──────────────┐
-    │                     │
-    ▼                     ▼
-┌─────────┐         ┌──────────┐
-│ Tool 1  │         │  Tool 2  │
-│ (実行)  │         │  (実行)  │
-└─────────┘         └──────────┘
+┌─────────────────────────────────────────────┐
+│   AIクライアント (Claude/Cursor/Windsurf)   │
+│                                             │
+│   従来: 4個のMCPサーバーに個別接続          │
+│   → 23,000トークン消費                      │
+│                                             │
+│   Search MCP: 1個のMCPサーバーのみ接続      │
+│   → 6,000トークン消費 (75%削減)            │
+└──────────────────┬──────────────────────────┘
+                   │ MCP Protocol (stdio)
+                   ↓
+┌─────────────────────────────────────────────┐
+│       Search MCP Server (アグリゲーター)    │
+│                                             │
+│  ┌──────────────────────────────────────┐  │
+│  │  MCP Client Manager                  │  │
+│  │  - 複数MCPサーバーの統合管理         │  │
+│  │  - stdio通信でMCPサーバーと接続      │  │
+│  │  - ツール情報の集約                  │  │
+│  └──────────────────────────────────────┘  │
+└──────┬────────┬────────┬────────┬──────────┘
+       │        │        │        │
+       │ stdio  │ stdio  │ stdio  │ stdio
+       ↓        ↓        ↓        ↓
+┌──────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+│filesystem│ │ brave  │ │database│ │ slack  │
+│   MCP    │ │  MCP   │ │  MCP   │ │  MCP   │
+│(50 tools)│ │(20)    │ │(30)    │ │(15)    │
+└──────────┘ └────────┘ └────────┘ └────────┘
 ```
 
-### 実行フロー
+### MCPプロトコル通信
 
-1. **ツール発見フェーズ**
-   ```
-   Claude: "利用可能なツールは何ですか？"
-   MCP Server: [ツール一覧のメタデータ]
-   ```
+Search MCPは、AIクライアントとの通信にMCPプロトコル（JSON-RPC 2.0 over stdio）を使用します。
 
-2. **ツール選択フェーズ**
-   ```
-   Claude: (内部で)どのツールが適切か判断
-   ```
+**Phase 1: 初期化**
+```json
+// AIクライアント → Search MCP
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "1.0.0",
+    "clientInfo": { "name": "claude-desktop", "version": "1.0.0" }
+  }
+}
+```
 
-3. **実行フェーズ**
-   ```
-   Claude: "searchツールを実行してください（パラメータ: ...）"
-   MCP Server: ツールを実行し、結果を返す
-   ```
+**Phase 2: ツール一覧取得（軽量版）**
+```json
+// AIクライアント → Search MCP
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/list",
+  "params": {}
+}
 
-4. **結果利用フェーズ**
-   ```
-   Claude: 結果を解釈し、ユーザーに応答
-   ```
+// Search MCP → AIクライアント（軽量なメタデータのみ）
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {"name": "filesystem.read_file", "description": "..."},
+      {"name": "brave.search", "description": "..."}
+      // パラメータ詳細は省略
+    ]
+  }
+}
+```
+
+**Phase 3: ツール実行（プロキシ）**
+```json
+// AIクライアント → Search MCP
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "filesystem.read_file",
+    "arguments": { "path": "/path/to/file" }
+  }
+}
+
+// Search MCP → filesystem MCP (stdio)
+// filesystem MCP → Search MCP (結果)
+// Search MCP → AIクライアント
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": "ファイルの内容..."
+  }
+}
+```
 
 ## Search MCP Serverでの実装
 
 ### 設計目標
 
-1. **軽量性**
-   - 最小限の依存関係
-   - 高速な起動時間
-   - 低メモリフットプリント
+1. **MCPアグリゲーション**
+   - 複数のMCPサーバーを統合管理
+   - stdio通信による標準MCPプロトコル実装
+   - 透過的なプロキシ動作
 
-2. **高い検索性能**
-   - 効率的なツール検索
-   - 明確なメタデータ
-   - 将来的なセマンティック検索の導入
+2. **コンテキスト削減**
+   - プログレッシブな開示により75%削減
+   - 軽量なツールメタデータ
+   - 必要時のみ詳細情報を提供
 
-3. **拡張性**
-   - 新しいツールの簡単な追加
-   - プラグインアーキテクチャ
+3. **簡単な設定**
+   - Claude Desktopと同じJSON設定形式
+   - コピー&ペーストで即座に利用可能
+   - 最小限の学習コスト
+
+4. **拡張性**
+   - 新しいMCPサーバーの追加が容易
+   - 既存のMCPサーバーをそのまま利用可能
 
 ### アーキテクチャマッピング
 
 | MCP概念 | Search MCP Server実装 |
 |---------|----------------------|
-| ツール発見 | `GET /tools` エンドポイント |
-| ツール実行 | `POST /tools/call` エンドポイント |
-| メタデータ管理 | `ToolRegistry` クラス |
-| ツール定義 | `src/tools/` ディレクトリ |
+| MCP Server（自身） | `src/index.ts` - stdio通信でAIクライアントと接続 |
+| MCP Client Manager | `src/mcp/mcp-client-manager.ts` - 複数MCPサーバー管理 |
+| MCP Client | `src/mcp/mcp-client.ts` - 個別MCPサーバーとの通信 |
+| ツール集約 | `src/tool-registry.ts` - 軽量メタデータ管理 |
+| 設定管理 | `config/mcp-servers.json` - Claude Desktop互換 |
 
 ### プログレッシブな開示の実装
 
-**Phase 1: ツール一覧の取得**
+**Phase 1: MCPサーバーからツール情報を取得（初回のみ）**
 ```typescript
-// 軽量なメタデータのみを返す
-server.get('/tools', async (request, reply) => {
-  return {
-    tools: toolRegistry.list() // メタデータのみ
-  };
-});
+// MCP Client Manager
+async listAllTools(): Promise<AggregatedToolMetadata[]> {
+  const allTools = [];
+  for (const [name, client] of this.clients) {
+    const tools = await client.listTools(); // 各MCPサーバーから取得
+    // 名前空間を付けて集約
+    allTools.push(...tools.map(t => ({
+      name: `${name}.${t.name}`,
+      description: t.description
+      // 詳細パラメータは保持するが、AIクライアントには送らない
+    })));
+  }
+  return allTools;
+}
 ```
 
-**Phase 2: ツールの実行**
+**Phase 2: AIクライアントに軽量版を返す**
 ```typescript
-// 選択されたツールのみを実行
-server.post('/tools/call', async (request, reply) => {
-  const { name, parameters } = request.body;
-  const result = await toolRegistry.execute(name, parameters);
-  return { success: true, result };
-});
+// Search MCP Server (自身のMCP実装)
+async handleToolsList(): Promise<ToolsListResult> {
+  const tools = await this.mcpManager.listAllTools();
+  // 軽量版メタデータのみを返す
+  return {
+    tools: tools.map(t => ({
+      name: t.name,
+      description: t.description
+      // inputSchemaは含めない
+    }))
+  };
+}
+```
+
+**Phase 3: ツール実行をプロキシ**
+```typescript
+// Search MCP Server
+async handleToolCall(name: string, args: any): Promise<any> {
+  const [serverName, toolName] = name.split('.');
+  // 該当するMCPサーバーへプロキシ
+  return await this.mcpManager.executeTool(serverName, toolName, args);
+}
 ```
 
 ## 実際の使用例
 
-### 例1: データ検索タスク
+### 例1: ファイル読み込み（filesystemMCP経由）
 
 ```
-User: "最近の売上データを検索して"
+User: "config.jsonの内容を確認して"
 
-Claude:
-  1. GET /tools でツール一覧を取得
-  2. "search" ツールが適切と判断
-  3. POST /tools/call で search を実行
+Claude Desktop:
+  1. tools/list で利用可能なツールを取得
+     → Search MCPから「filesystem.read_file」等を発見
+  2. 「filesystem.read_file」が適切と判断
+  3. tools/call で filesystem.read_file を実行
      {
-       "name": "search",
-       "parameters": {
-         "query": "最近の売上",
-         "limit": 10
+       "name": "filesystem.read_file",
+       "arguments": {
+         "path": "/path/to/config.json"
        }
      }
-  4. 結果を解釈してユーザーに提示
+  4. Search MCP → filesystem MCP へプロキシ
+  5. 結果を解釈してユーザーに提示
 ```
 
-### 例2: 複雑な計算タスク
+### 例2: Web検索とデータベースクエリの組み合わせ
 
 ```
-User: "過去3ヶ月の平均売上を計算して"
+User: "最新のTypeScript情報を検索して、関連プロジェクトをデータベースから取得"
 
-Claude:
-  1. GET /tools でツール一覧を取得
-  2. "search" と "calculate" が必要と判断
-  3. まず search で売上データを取得
-  4. 次に calculate で平均を計算
-  5. 結果をユーザーに提示
+Claude Desktop:
+  1. tools/list で利用可能なツールを取得
+     → Search MCPから「brave.search」「database.query」等を発見
+  2. まず「brave.search」でWeb検索
+     {
+       "name": "brave.search",
+       "arguments": { "query": "TypeScript latest features" }
+     }
+     → Search MCP → brave MCP へプロキシ
+  3. 次に「database.query」でデータベース検索
+     {
+       "name": "database.query",
+       "arguments": { "sql": "SELECT * FROM projects WHERE..." }
+     }
+     → Search MCP → database MCP へプロキシ
+  4. 両方の結果を統合してユーザーに提示
 ```
 
-## MCPの利点
+**ポイント**:
+- Claude Desktopは Search MCP という1つのMCPサーバーにのみ接続
+- 実際には複数のバックエンドMCPサーバー（filesystem、brave、database）を活用
+- コンテキスト消費は最小限（軽量なメタデータのみ）
+
+## MCPアグリゲーターの利点
 
 ### 1. コンテキスト効率性
 
-**従来のアプローチ**:
+**従来のアプローチ（MCPサーバー個別接続）**:
 ```
-すべてのツール定義 (10,000トークン)
-+ ユーザーのクエリ (100トークン)
-+ AIの応答 (500トークン)
-= 10,600トークン消費
+filesystem MCP: 50 tools × 200トークン = 10,000トークン
+brave MCP:      20 tools × 200トークン = 4,000トークン
+database MCP:   30 tools × 200トークン = 6,000トークン
+slack MCP:      15 tools × 200トークン = 3,000トークン
+─────────────────────────────────────────────────
+合計: 23,000トークン消費
 ```
 
-**MCPアプローチ**:
+**Search MCP（アグリゲーター）**:
 ```
-ツールメタデータ (1,000トークン)
-+ ユーザーのクエリ (100トークン)
-+ AIの応答 (500トークン)
-= 1,600トークン消費 (84%削減)
+軽量メタデータ: 115 tools × 50トークン = 5,750トークン
+詳細取得（3ツール使用時）: 3 × 200トークン = 600トークン
+─────────────────────────────────────────────────
+合計: 6,350トークン消費 (72%削減)
 ```
 
 ### 2. スケーラビリティ
 
-- ツール数が増えてもメタデータは線形に増加
-- 実行は必要なツールのみなので、O(1)の複雑度
+- MCPサーバー数が増えても、AIクライアントは1つの接続のみ
+- 新しいMCPサーバーの追加は設定ファイルに1項目追記するだけ
+- 各MCPサーバーは独立して動作し、相互に影響しない
 
 ### 3. 保守性
 
-- ツールの追加・変更が独立して可能
-- 既存のツールに影響を与えない
+- 各MCPサーバーの設定を一元管理
+- Claude Desktop、Cursor、Windsurf等、複数のAIクライアントで同じ設定を再利用
+- MCPサーバーの追加・削除・更新が容易
 
-### 4. 安全性
+### 4. 透過性
 
-- ツールの実行を制御可能
-- サンドボックス環境での実行が容易
+- 既存のMCPサーバーをそのまま利用可能（変更不要）
+- 標準MCPプロトコルに準拠
+- AIクライアントからは通常のMCPサーバーとして見える
 
 ## 将来の拡張
 
-### 1. セマンティック検索
+### 1. ツール検索機能の強化
 
-ツールの説明をベクトル化し、意味的に類似したツールを検索
-
-```typescript
-// 将来の実装例
-server.post('/tools/semantic-search', async (request, reply) => {
-  const { query } = request.body;
-  const embeddings = await generateEmbeddings(query);
-  const results = await vectorSearch(embeddings);
-  return { tools: results };
-});
-```
-
-### 2. ツールの合成
-
-複数のツールを組み合わせて新しい機能を作成
+集約されたツールを効率的に検索
 
 ```typescript
 // 将来の実装例
-server.post('/tools/compose', async (request, reply) => {
-  const { tools, workflow } = request.body;
-  const result = await executeWorkflow(tools, workflow);
-  return { result };
-});
+async handleToolsSearch(query: string): Promise<ToolMetadata[]> {
+  // 部分一致検索
+  const results = this.toolRegistry.search(query);
+  // セマンティック検索（ベクトル検索）
+  const semanticResults = await this.vectorSearch(query);
+  return [...results, ...semanticResults];
+}
 ```
 
-### 3. 外部実行環境
+### 2. ホットリロード
 
-Dockerコンテナでツールを実行
+設定ファイル変更時に自動的にMCPサーバーを再起動
 
 ```typescript
 // 将来の実装例
-server.post('/tools/execute-in-container', async (request, reply) => {
-  const { name, parameters } = request.body;
-  const result = await dockerExecutor.run(name, parameters);
-  return { result };
+watchConfig('config/mcp-servers.json', async (changes) => {
+  for (const change of changes) {
+    if (change.type === 'added') {
+      await mcpManager.start(change.serverName);
+    } else if (change.type === 'removed') {
+      await mcpManager.stop(change.serverName);
+    }
+  }
 });
 ```
+
+### 3. 統計・監視機能
+
+ツール使用状況やパフォーマンスの追跡
+
+```typescript
+// 将来の実装例
+class ToolUsageTracker {
+  async recordToolCall(serverName: string, toolName: string) {
+    // 使用統計を記録
+  }
+
+  async getStats(): Promise<UsageStats> {
+    // 統計情報を返す
+  }
+}
+```
+
+### 4. Web管理UI（オプション）
+
+MCPサーバーの管理画面とダッシュボード
+
+- MCPサーバーのステータス監視
+- ツール使用統計の可視化
+- 設定ファイルの編集
+- リアルタイムログ表示
 
 ## 参考資料
 
@@ -308,10 +433,12 @@ server.post('/tools/execute-in-container', async (request, reply) => {
 
 Model Context Protocol (MCP) は、AIエージェントがツールを効率的に活用するための強力なフレームワークです。
 
-Search MCP Serverは、MCPの原則に基づき、以下を実現します：
+**Search MCP Server**は、MCPアグリゲーターとして、以下を実現します：
 
-1. **プログレッシブな開示** でコンテキストを節約
-2. **構造化されたメタデータ** で高い検索性能
-3. **拡張可能なアーキテクチャ** で将来の機能追加に対応
+1. **複数のMCPサーバーを統合** し、AIクライアントの接続先を1つに集約
+2. **プログレッシブな開示** により、コンテキスト消費を75%削減
+3. **stdio通信とJSON-RPC 2.0** による標準MCPプロトコル準拠
+4. **Claude Desktop互換の設定形式** で最小限の学習コスト
+5. **透過的なプロキシ** により、既存のMCPサーバーをそのまま活用
 
-この基盤の上に、さらに高度な機能（セマンティック検索、ツール合成、外部実行環境など）を構築していくことができます。
+この基盤の上に、さらに高度な機能（ツール検索、ホットリロード、統計分析、管理UIなど）を構築していくことができます。

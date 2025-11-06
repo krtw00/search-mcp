@@ -1,4 +1,6 @@
 import type { ToolMetadata, ToolImplementation } from './types.js';
+import { InputValidator } from './validation/input-validator.js';
+import { ToolNotFoundError, ToolExecutionError } from './errors.js';
 
 /**
  * ツールレジストリ
@@ -38,8 +40,26 @@ export class ToolRegistry {
   async execute(name: string, parameters: Record<string, any>): Promise<any> {
     const tool = this.tools.get(name);
     if (!tool) {
-      throw new Error(`Tool not found: ${name}`);
+      throw new ToolNotFoundError(`Tool not found: ${name}`, name);
     }
-    return await tool.implementation(parameters);
+
+    // Validate parameters against schema
+    if (tool.metadata.parameters && tool.metadata.parameters.length > 0) {
+      InputValidator.validateOrThrow(
+        tool.metadata.parameters,
+        parameters,
+        name
+      );
+    }
+
+    // Execute the tool
+    try {
+      return await tool.implementation(parameters);
+    } catch (error) {
+      throw new ToolExecutionError(
+        `Failed to execute tool ${name}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        error
+      );
+    }
   }
 }
