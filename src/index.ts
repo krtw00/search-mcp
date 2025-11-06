@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { ToolRegistry } from './tool-registry.js';
 import { echoMetadata, echoImplementation } from './tools/echo.js';
 import { searchMetadata, searchImplementation } from './tools/search.js';
+import { calculateMetadata, calculateImplementation } from './tools/calculate.js';
 import type { ToolCallRequest, ToolCallResponse } from './types.js';
 
 // サーバーインスタンスを作成します。
@@ -15,6 +16,7 @@ const server: FastifyInstance = Fastify({
 const toolRegistry = new ToolRegistry();
 toolRegistry.register(echoMetadata, echoImplementation);
 toolRegistry.register(searchMetadata, searchImplementation);
+toolRegistry.register(calculateMetadata, calculateImplementation);
 
 // サーバーが正常に起動しているかを確認するためのルート（APIエンドポイント）
 server.get('/', async (request, reply) => {
