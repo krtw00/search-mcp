@@ -20,7 +20,10 @@ import {
   createAdvancedSearchToolImplementation,
   createListServersToolMetadata,
   createListServersToolImplementation,
+  createHealthCheckToolMetadata,
+  createHealthCheckToolImplementation,
 } from './search/search-tools.js';
+import { HealthChecker } from './monitoring/health-check.js';
 import type {
   JSONRPCRequest,
   JSONRPCResponse,
@@ -30,11 +33,15 @@ import type {
 // Initialize MCP Client Manager
 const manager = new MCPClientManager();
 
+// Initialize Health Checker
+const healthChecker = new HealthChecker(manager, '1.0.0');
+
 // Search tools metadata (registered after initialization)
 const searchTools = [
   createSearchToolMetadata(),
   createAdvancedSearchToolMetadata(),
   createListServersToolMetadata(),
+  createHealthCheckToolMetadata(),
 ];
 
 // Track request ID for responses
@@ -155,6 +162,13 @@ async function handleRequest(request: JSONRPCRequest): Promise<void> {
 
         if (name === 'list_servers') {
           const impl = createListServersToolImplementation(() => manager.getStats());
+          const result = await impl(args || {});
+          sendResponse(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+          break;
+        }
+
+        if (name === 'health_check') {
+          const impl = createHealthCheckToolImplementation(healthChecker);
           const result = await impl(args || {});
           sendResponse(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
           break;

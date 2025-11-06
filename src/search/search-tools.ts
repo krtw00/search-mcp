@@ -280,3 +280,39 @@ export function createListServersToolImplementation(
     };
   };
 }
+
+/**
+ * Create health check tool metadata
+ */
+export function createHealthCheckToolMetadata(): ToolMetadata {
+  return {
+    name: 'health_check',
+    description: 'Check the health status of the Search MCP Server, including memory usage, server status, cache performance, and configuration',
+    parameters: [
+      {
+        name: 'detailed',
+        type: 'boolean',
+        description: 'Return detailed health information with all checks',
+        required: false,
+        default: false,
+      },
+    ],
+  };
+}
+
+/**
+ * Create health check tool implementation
+ */
+export function createHealthCheckToolImplementation(
+  healthChecker: any
+): ToolImplementation {
+  return async (parameters: Record<string, any>) => {
+    const detailed = parameters.detailed || false;
+
+    if (detailed) {
+      return await healthChecker.check();
+    } else {
+      return await healthChecker.quickCheck();
+    }
+  };
+}

@@ -9,6 +9,7 @@ import {
   ToolNotFoundError,
   MCPServerError,
 } from '../errors.js';
+import { getToolCache } from '../performance/tool-cache.js';
 import type {
   MCPServersConfig,
   ToolMetadata,
@@ -175,16 +176,34 @@ export class MCPClientManager {
       throw new MCPServerError(`MCP server not running: ${serverName}`, serverName);
     }
 
-    // Execute the tool
-    try {
-      const response = await client.callTool(originalToolName, args);
-      return response;
-    } catch (error) {
-      throw new MCPServerError(
-        `Failed to execute tool ${toolName}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        serverName
-      );
+    // Try to get from cache first
+    const toolCache = getToolCache();
+    const { result, cached } = await toolCache.executeWithCache(
+      toolName,
+      args,
+      async () => {
+        // Execute the tool if not cached
+        try {
+          const response = await client.callTool(originalToolName, args);
+          return response;
+        } catch (error) {
+          throw new MCPServerError(
+            `Failed to execute tool ${toolName}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            serverName
+          );
+        }
+      }
+    );
+
+    // Add cache indicator to response if it was cached
+    if (cached && typeof result === 'object' && result !== null) {
+      return {
+        ...result,
+        _cached: true,
+      };
     }
+
+    return result;
   }
 
   /**
