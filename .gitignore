@@ -25,6 +25,11 @@ logs/
 *.swp
 *.swo
 
+# Claude Code configuration
+.claude/
+.mcp_cache/
+.serena/
+
 # OS
 .DS_Store
 Thumbs.db
